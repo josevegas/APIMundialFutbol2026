@@ -2,6 +2,7 @@ import os
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
@@ -22,6 +23,7 @@ stadiums_collection = db["stadiums"]
 matches_collection = db["matches"]
 
 app = FastAPI(title="API de Mundial de Futbol 2026")
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 origins = CORS_ORIGINS if CORS_ORIGINS != ["http://localhost:5173"] else ["http://localhost:5173"]
 app.add_middleware(
     CORSMiddleware,
