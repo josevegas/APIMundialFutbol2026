@@ -1,6 +1,7 @@
 import os
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
@@ -9,7 +10,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 # Cargar variables de entorno desde .env
 load_dotenv()
 MONGODB_URI = os.getenv("MONGODB_URI")
-
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*").split(",")  # Permitir múltiples orígenes separados por comas
 if not MONGODB_URI:
     raise ValueError("MONGODB_URI no está definida en el archivo .env")
 
@@ -21,7 +22,14 @@ stadiums_collection = db["stadiums"]
 matches_collection = db["matches"]
 
 app = FastAPI(title="API de Mundial de Futbol 2026")
-
+origins = CORS_ORIGINS if CORS_ORIGINS != ["http://localhost:5173"] else ["http://localhost:5173"]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 # --- Modelos Usados ---
 class Match(BaseModel):
     id: str
@@ -268,6 +276,11 @@ async def get_matches():
     matches = await matches_collection.find({}, {"_id": 0}).to_list(length=100)
     return matches
 
+@app.get("/stadiums/", response_model=List[dict], summary="Obtener la lista de estadios")
+async def get_stadiums():
+    stadiums = await stadiums_collection.find({}, {"_id": 0}).to_list(length=100)
+    return stadiums
+
 @app.patch("/matches/{match_id}", summary="Actualizar el resultado de un partido")
 async def update_match(match_id: str, match_update: MatchUpdate):
     match = await matches_collection.update_one(
@@ -287,8 +300,15 @@ async def update_match(match_id: str, match_update: MatchUpdate):
     partido_actualizado = await matches_collection.find_one({"id": match_id}, {"_id": 0})
     return partido_actualizado
 
+# --- Endpoint para obtener partidos por grupo ---
+@app.get("/matches/group/{group_id}", response_model=List[dict], summary="Obtener partidos por grupo")
+async def get_matches_by_group(group_id: str):
+    group_upper = group_id.upper()
+    matches = await matches_collection.find({"group": group_upper}, {"_id": 0}).to_list(length=100)
+    return matches
+
 # --- Endpoint de Tabla de posiciones ---
-@app.get("/tabla/", summary="Obtener la tabla de posiciones actualizada")
+@app.get("/teams/", summary="Obtener la tabla de posiciones actualizada")
 async def obtener_tabla():
     # Reiniciar estadísticas
     await teams_collection.update_many({}, {
@@ -365,5 +385,8 @@ async def root():
     return {"mensaje": "API de Mundial de Futbol 2026 con MongoDB", "endpoints": [
         "/docs - Documentación interactiva",
         "/matches/ - Lista de partidos",
-        "/tabla/ - Tabla de posiciones"
+        "/teams/ - Datos de equipos y tabla de posiciones",
+        "/stadiums/ - Lista de estadios",
+        "/matches/{match_id} - Actualizar resultado de un partido",
+        "/matches/group/{group_id} - Obtener partidos por grupo"
     ]}
