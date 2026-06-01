@@ -300,7 +300,48 @@ async def update_match(match_id: str, match_update: MatchUpdate):
         
     if match.matched_count == 0:
         raise HTTPException(status_code=404, detail="Partido no encontrado")
+    
     partido_actualizado = await matches_collection.find_one({"id": match_id}, {"_id": 0})
+    home_team= await teams_collection.find_one({"id": partido_actualizado["homeTeamId"]}, {"_id": 0})
+    away_team= await teams_collection.find_one({"id": partido_actualizado["awayTeamId"]}, {"_id": 0})
+    if home_team and away_team:
+        if partido_actualizado["homeScore"] > partido_actualizado["awayScore"]:
+            await teams_collection.update_one(
+                {"id": home_team["id"]},
+                {"$inc": {"played":1,"won":1,"goalsFor": partido_actualizado["homeScore"], "goalsAgainst": partido_actualizado["awayScore"], "points": 3}}
+            )
+            await teams_collection.update_one(
+                {"id": away_team["id"]},
+                {"$inc": {"played":1,"lost":1,"goalsFor": partido_actualizado["awayScore"], "goalsAgainst": partido_actualizado["homeScore"]}}
+            )
+        elif partido_actualizado["homeScore"] < partido_actualizado["awayScore"]:
+            await teams_collection.update_one(
+                {"id": home_team["id"]},
+                {"$inc": {"played":1,"lost":1,"goalsFor": partido_actualizado["homeScore"], "goalsAgainst": partido_actualizado["awayScore"]}}
+            )
+            await teams_collection.update_one(
+                {"id": away_team["id"]},
+                {"$inc": {"played":1,"won":1,"goalsFor": partido_actualizado["awayScore"], "goalsAgainst": partido_actualizado["homeScore"], "points": 3}}
+            )
+        else:
+            await teams_collection.update_one(
+                {"id": home_team["id"]},
+                {"$inc": {"played":1,"drawn":1,"goalsFor": partido_actualizado["homeScore"], "goalsAgainst": partido_actualizado["awayScore"], "points": 1}}
+            )
+            await teams_collection.update_one(
+                {"id": away_team["id"]},
+                {"$inc": {"played":1,"drawn":1,"goalsFor": partido_actualizado["awayScore"], "goalsAgainst": partido_actualizado["homeScore"], "points": 1}}
+            )
+    diferencia_goles_home = home_team.get("goalsFor", 0) - home_team.get("goalsAgainst", 0)
+    diferencia_goles_away = away_team.get("goalsFor", 0) - away_team.get("goalsAgainst", 0)
+    await teams_collection.update_one(
+        {"id": home_team["id"]},
+        {"$set": {"goalDifference": diferencia_goles_home}}
+    )
+    await teams_collection.update_one(
+        {"id": away_team["id"]},    
+        {"$set": {"goalDifference": diferencia_goles_away}}
+    )
     return partido_actualizado
 
 # --- Endpoint para obtener partidos por grupo ---
@@ -310,69 +351,15 @@ async def get_matches_by_group(group_id: str):
     matches = await matches_collection.find({"group": group_upper}, {"_id": 0}).to_list(length=100)
     return matches
 
+# --- Endpoint de equipos ---
+@app.get("/teams/", response_model=List[dict], summary="Obtener la lista de equipos")
+async def get_teams():
+    teams = await teams_collection.find({}, {"_id": 0}).to_list(length=100)
+    return teams
+
 # --- Endpoint de Tabla de posiciones ---
-@app.get("/teams/", summary="Obtener la tabla de posiciones actualizada")
+@app.get("/teams/table", summary="Obtener la tabla de posiciones actualizada")
 async def obtener_tabla():
-    # Reiniciar estadísticas
-    await teams_collection.update_many({}, {
-        "$set": {
-            "played": 0, "won": 0, "drawn": 0, "lost": 0,
-            "goalsFor": 0, "goalsAgainst": 0, "goalDifference": 0, "points": 0
-        }
-    })
-    
-    # Actualizar estadísticas según resultados de partidos
-    matches = await matches_collection.find({"isCompleted": True},{"_id": 0}).to_list(length=100)
-    
-    for match in matches:
-        home_team_id = match.get("homeTeamId")
-        away_team_id = match.get("awayTeamId")
-        home_goals = match.get("homeScore", 0)
-        away_goals = match.get("awayScore", 0)
-        
-        # Obtener equipos
-        home_team = await teams_collection.find_one({"id": home_team_id},{"_id": 0})
-        away_team = await teams_collection.find_one({"id": away_team_id},{"_id": 0})
-        
-        if home_team and away_team:
-            # Actualizar estadísticas
-            if home_goals > away_goals:
-                await teams_collection.update_one(
-                    {"id": home_team_id},
-                    {"$inc": {"played": 1, "won": 1, "goalsFor": home_goals, "goalsAgainst": away_goals, "points": 3}}
-                )
-                await teams_collection.update_one(
-                    {"id": away_team_id},
-                    {"$inc": {"played": 1, "lost": 1, "goalsFor": away_goals, "goalsAgainst": home_goals}}
-                )
-            elif home_goals < away_goals:
-                await teams_collection.update_one(
-                    {"id": home_team_id},
-                    {"$inc": {"played": 1, "lost": 1, "goalsFor": home_goals, "goalsAgainst": away_goals}}
-                )
-                await teams_collection.update_one(
-                    {"id": away_team_id},
-                    {"$inc": {"played": 1, "won": 1, "goalsFor": away_goals, "goalsAgainst": home_goals, "points": 3}}
-                )
-            else:
-                await teams_collection.update_one(
-                    {"id": home_team_id},
-                    {"$inc": {"played": 1, "drawn": 1, "goalsFor": home_goals, "goalsAgainst": away_goals, "points": 1}}
-                )
-                await teams_collection.update_one(
-                    {"id": away_team_id},
-                    {"$inc": {"played": 1, "drawn": 1, "goalsFor": away_goals, "goalsAgainst": home_goals, "points": 1}}
-                )
-    
-    # Calcular diferencia de goles
-    teams = await teams_collection.find({},{"_id": 0}).to_list(length=100)
-    for team in teams:
-        goal_difference = team.get("goalsFor", 0) - team.get("goalsAgainst", 0)
-        await teams_collection.update_one(
-            {"id": team["id"]},
-            {"$set": {"goalDifference": goal_difference}}
-        )
-    
     # Ordenar tabla
     sorted_teams = await teams_collection.find({},{"_id": 0}).sort([
         ("points", -1),
@@ -392,4 +379,5 @@ async def root():
         "/stadiums/ - Lista de estadios",
         "/matches/{match_id} - Actualizar resultado de un partido",
         "/matches/group/{group_id} - Obtener partidos por grupo"
+        "/teams/table - Obtener tabla de posiciones actualizada"
     ]}
