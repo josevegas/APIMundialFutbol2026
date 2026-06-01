@@ -226,6 +226,7 @@ async def initialize_database():
     await teams_collection.create_index("id", unique=True)
     await stadiums_collection.create_index("id", unique=True)
     await matches_collection.create_index("id", unique=True)
+    await matches_collection.create_index("group")
     # Inicializar equipos
     for team_id, team_data in teams_data.items():
         team_doc = team_data.copy()
