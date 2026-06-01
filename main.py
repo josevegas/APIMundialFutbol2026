@@ -357,17 +357,13 @@ async def get_teams():
     teams = await teams_collection.find({}, {"_id": 0}).to_list(length=100)
     return teams
 
-# --- Endpoint de Tabla de posiciones ---
-@app.get("/teams/table", summary="Obtener la tabla de posiciones actualizada")
-async def obtener_tabla():
+# --- Endpoint de Partido por Id ---
+@app.get("/teams/{team_id}", summary="Obtener partido por Id")
+async def get_matches_by_id(id: str):
     # Ordenar tabla
-    sorted_teams = await teams_collection.find({},{"_id": 0}).sort([
-        ("points", -1),
-        ("goalDifference", -1),
-        ("goalsFor", -1)
-    ]).to_list(length=100)
-    
-    return sorted_teams
+    match_upper = id.upper()
+    match = await matches_collection.find_one({"id": match_upper}, {"_id": 0})
+    return match
 
 # --- Endpoint raíz ---
 @app.get("/", summary="API de Mundial de Fútbol 2026")
@@ -379,5 +375,5 @@ async def root():
         "/stadiums/ - Lista de estadios",
         "/matches/{match_id} - Actualizar resultado de un partido",
         "/matches/group/{group_id} - Obtener partidos por grupo"
-        "/teams/table - Obtener tabla de posiciones actualizada"
+        "/matches/{match_id} - Obtener partido por id"
     ]}
