@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 # Cargar variables de entorno desde .env
 load_dotenv()
 MONGODB_URI = os.getenv("MONGODB_URI")
-CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*").split(",")  # Permitir múltiples orígenes separados por comas
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")  # Permitir múltiples orígenes separados por comas
 if not MONGODB_URI:
     raise ValueError("MONGODB_URI no está definida en el archivo .env")
 
@@ -26,7 +26,7 @@ matches_collection = db["matches"]
 
 app = FastAPI(title="API de Mundial de Futbol 2026")
 app.add_middleware(GZipMiddleware, minimum_size=1000)
-origins = CORS_ORIGINS if CORS_ORIGINS != ["http://localhost:5173"] else ["http://localhost:5173"]
+origins = [origin.strip() for origin in CORS_ORIGINS if origin.strip()]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
