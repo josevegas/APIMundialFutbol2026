@@ -7,32 +7,24 @@ from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
 from motor.motor_asyncio import AsyncIOMotorClient
-from pymongo import UpdateOne
-from contextlib import asynccontextmanager
 
 # Cargar variables de entorno desde .env
 load_dotenv()
 MONGODB_URI = os.getenv("MONGODB_URI")
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*").split(",")  # Permitir múltiples orígenes separados por comas
 if not MONGODB_URI:
     raise ValueError("MONGODB_URI no está definida en el archivo .env")
 
-cors_env= os.getenv("CORS_ORIGINS", "http://localhost:5173")  # Permitir múltiples orígenes separados por comas
 # Inicializar cliente y base de datos
 client = AsyncIOMotorClient(MONGODB_URI)
 db = client["mundial2026"]
 teams_collection = db["teams"]
 stadiums_collection = db["stadiums"]
 matches_collection = db["matches"]
-if cors_env is None:
-    cors_env = "http://localhost:5173"
-origins = [
-    origin.strip().rstrip("/") 
-    for origin in cors_env.split(",") 
-    if origin.strip()
-]
 
 app = FastAPI(title="API de Mundial de Futbol 2026")
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+origins = CORS_ORIGINS if CORS_ORIGINS != ["http://localhost:5173"] else ["http://localhost:5173"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -45,7 +37,7 @@ class Match(BaseModel):
     id: str
     homeTeamId: str
     awayTeamId: str
-    date: datetime
+    date: str
     stadiumId: str
     stage: str
     group: Optional[str] = None
@@ -235,28 +227,26 @@ async def initialize_database():
     await stadiums_collection.create_index("id", unique=True)
     await matches_collection.create_index("id", unique=True)
     await matches_collection.create_index("group")
-
     # Inicializar equipos
-    operaciones_equipos=[]
     for team_id, team_data in teams_data.items():
         team_doc = team_data.copy()
         team_doc.update({"played": 0, "won": 0, "drawn": 0, "lost": 0,
                         "goalsFor": 0, "goalsAgainst": 0, "goalDifference": 0, "points": 0})
-        operaciones_equipos.append(
-            UpdateOne({"id": team_id}, {"$setOnInsert": team_doc}, upsert=True)
+        await teams_collection.update_one(
+            {"id": team_id}, 
+            {"$setOnInsert": team_doc}, 
+            upsert=True
         )
-    if operaciones_equipos:
-        await teams_collection.bulk_write(operaciones_equipos)
+    
     # Inicializar estadios
-    operaciones_estadios=[]
     for stadium_id, stadium_data in stadiums_data.items():
-        operaciones_estadios.append(
-            UpdateOne({"id": stadium_id}, {"$setOnInsert": stadium_data}, upsert=True)
+        await stadiums_collection.update_one(
+            {"id": stadium_id}, 
+            {"$setOnInsert": stadium_data}, 
+            upsert=True
         )
-    if operaciones_estadios:
-        await stadiums_collection.bulk_write(operaciones_estadios)
+    
     # Inicializar partidos
-    operaciones_partidos=[]
     for match_id, match_data in matches_data.items():
         match_doc = match_data.copy()
         match_doc.update({"homeScore": None, 
@@ -265,28 +255,28 @@ async def initialize_database():
                           "awayPenaltyScore": None, 
                           "isCompleted": False, 
                           "winnerId": None})
-        operaciones_partidos.append(
-            UpdateOne({"id": match_id}, {"$setOnInsert": match_doc}, upsert=True)
+        await matches_collection.update_one(
+            {"id": match_id}, 
+            {"$setOnInsert": match_doc}, 
+            upsert=True
         )
-    if operaciones_partidos:
-        await matches_collection.bulk_write(operaciones_partidos)
 
 # --- Eventos de startup ---
-@asynccontextmanager
-async def lifespan(app: FastAPI):
+@app.on_event("startup")
+async def startup_event():
     print("Inicializando base de datos MongoDB...")
     await initialize_database()
     print("Base de datos inicializada correctamente")
-    yield
+
+@app.on_event("shutdown")
+async def shutdown_event():
     print("Cerrando conexión con MongoDB...")
     client.close()
-
-app = FastAPI(title="API de Mundial de Futbol 2026",lifespan=lifespan)
 
 # --- Endpoints de partidos ---
 @app.get("/matches/", response_model=List[dict], summary="Obtener la lista de partidos")
 async def get_matches():
-    matches = await matches_collection.find({}, {"_id": 0}).to_list(length=150)
+    matches = await matches_collection.find({}, {"_id": 0}).to_list(length=100)
     return matches
 
 @app.get("/stadiums/", response_model=List[dict], summary="Obtener la lista de estadios")
@@ -296,13 +286,6 @@ async def get_stadiums():
 
 @app.patch("/matches/{match_id}", summary="Actualizar el resultado de un partido")
 async def update_match(match_id: str, match_update: MatchUpdate):
-    # Verificamos si el partido existe y si ya fue completado para evitar duplicar estadísticas
-    existing_match = await matches_collection.find_one({"id": match_id})
-    if not existing_match:
-        raise HTTPException(status_code=404, detail="Partido no encontrado")
-    if existing_match.get("isCompleted"):
-        raise HTTPException(status_code=400, detail="El partido ya ha sido completado y actualizado")
-
     match = await matches_collection.update_one(
         {"id": match_id},
         {"$set": {
@@ -315,44 +298,50 @@ async def update_match(match_id: str, match_update: MatchUpdate):
         }}
     )
         
-    partido_actualizado = await matches_collection.find_one({"id": match_id}, {"_id": 0})
-    home_team = await teams_collection.find_one({"id": partido_actualizado["homeTeamId"]}, {"_id": 0})
-    away_team = await teams_collection.find_one({"id": partido_actualizado["awayTeamId"]}, {"_id": 0})
+    if match.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Partido no encontrado")
     
+    partido_actualizado = await matches_collection.find_one({"id": match_id}, {"_id": 0})
+    home_team= await teams_collection.find_one({"id": partido_actualizado["homeTeamId"]}, {"_id": 0})
+    away_team= await teams_collection.find_one({"id": partido_actualizado["awayTeamId"]}, {"_id": 0})
     if home_team and away_team:
-        home_goals = partido_actualizado["homeScore"]
-        away_goals = partido_actualizado["awayScore"]
-        home_gd = home_goals - away_goals
-        away_gd = away_goals - home_goals
-
-        if home_goals > away_goals:
+        if partido_actualizado["homeScore"] > partido_actualizado["awayScore"]:
             await teams_collection.update_one(
                 {"id": home_team["id"]},
-                {"$inc": {"played": 1, "won": 1, "goalsFor": home_goals, "goalsAgainst": away_goals, "points": 3, "goalDifference": home_gd}}
+                {"$inc": {"played":1,"won":1,"goalsFor": partido_actualizado["homeScore"], "goalsAgainst": partido_actualizado["awayScore"], "points": 3}}
             )
             await teams_collection.update_one(
                 {"id": away_team["id"]},
-                {"$inc": {"played": 1, "lost": 1, "goalsFor": away_goals, "goalsAgainst": home_goals, "goalDifference": away_gd}}
+                {"$inc": {"played":1,"lost":1,"goalsFor": partido_actualizado["awayScore"], "goalsAgainst": partido_actualizado["homeScore"]}}
             )
-        elif home_goals < away_goals:
+        elif partido_actualizado["homeScore"] < partido_actualizado["awayScore"]:
             await teams_collection.update_one(
                 {"id": home_team["id"]},
-                {"$inc": {"played": 1, "lost": 1, "goalsFor": home_goals, "goalsAgainst": away_goals, "goalDifference": home_gd}}
+                {"$inc": {"played":1,"lost":1,"goalsFor": partido_actualizado["homeScore"], "goalsAgainst": partido_actualizado["awayScore"]}}
             )
             await teams_collection.update_one(
                 {"id": away_team["id"]},
-                {"$inc": {"played": 1, "won": 1, "goalsFor": away_goals, "goalsAgainst": home_goals, "points": 3, "goalDifference": away_gd}}
+                {"$inc": {"played":1,"won":1,"goalsFor": partido_actualizado["awayScore"], "goalsAgainst": partido_actualizado["homeScore"], "points": 3}}
             )
         else:
             await teams_collection.update_one(
                 {"id": home_team["id"]},
-                {"$inc": {"played": 1, "drawn": 1, "goalsFor": home_goals, "goalsAgainst": away_goals, "points": 1, "goalDifference": home_gd}}
+                {"$inc": {"played":1,"drawn":1,"goalsFor": partido_actualizado["homeScore"], "goalsAgainst": partido_actualizado["awayScore"], "points": 1}}
             )
             await teams_collection.update_one(
                 {"id": away_team["id"]},
-                {"$inc": {"played": 1, "drawn": 1, "goalsFor": away_goals, "goalsAgainst": home_goals, "points": 1, "goalDifference": away_gd}}
+                {"$inc": {"played":1,"drawn":1,"goalsFor": partido_actualizado["awayScore"], "goalsAgainst": partido_actualizado["homeScore"], "points": 1}}
             )
-
+    diferencia_goles_home = home_team.get("goalsFor", 0) - home_team.get("goalsAgainst", 0)
+    diferencia_goles_away = away_team.get("goalsFor", 0) - away_team.get("goalsAgainst", 0)
+    await teams_collection.update_one(
+        {"id": home_team["id"]},
+        {"$set": {"goalDifference": diferencia_goles_home}}
+    )
+    await teams_collection.update_one(
+        {"id": away_team["id"]},    
+        {"$set": {"goalDifference": diferencia_goles_away}}
+    )
     return partido_actualizado
 
 # --- Endpoint para obtener partidos por grupo ---
@@ -369,12 +358,11 @@ async def get_teams():
     return teams
 
 # --- Endpoint de Partido por Id ---
-@app.get("/matches/{match_id}", summary="Obtener partido por Id")
-async def get_match_by_id(match_id: str):
-    match_upper = match_id.upper()
+@app.get("/teams/{team_id}", summary="Obtener partido por Id")
+async def get_matches_by_id(id: str):
+    # Ordenar tabla
+    match_upper = id.upper()
     match = await matches_collection.find_one({"id": match_upper}, {"_id": 0})
-    if not match:
-        raise HTTPException(status_code=404, detail="Partido no encontrado")
     return match
 
 # --- Endpoint raíz ---
