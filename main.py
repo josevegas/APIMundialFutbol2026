@@ -5,8 +5,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
-from datetime import datetime
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import UpdateOne
+from contextlib import asynccontextmanager
 
 # Cargar variables de entorno desde .env
 load_dotenv()
@@ -228,25 +229,28 @@ async def initialize_database():
     await matches_collection.create_index("id", unique=True)
     await matches_collection.create_index("group")
     # Inicializar equipos
+    operaciones_equipos = []
     for team_id, team_data in teams_data.items():
         team_doc = team_data.copy()
         team_doc.update({"played": 0, "won": 0, "drawn": 0, "lost": 0,
                         "goalsFor": 0, "goalsAgainst": 0, "goalDifference": 0, "points": 0})
-        await teams_collection.update_one(
-            {"id": team_id}, 
-            {"$setOnInsert": team_doc}, 
-            upsert=True
+        operaciones_equipos.append(
+            UpdateOne({"id": team_id}, {"$setOnInsert": team_doc}, upsert=True)
         )
+    if operaciones_equipos:
+        await teams_collection.bulk_write(operaciones_equipos)
     
     # Inicializar estadios
+    operaciones_estadios = []
     for stadium_id, stadium_data in stadiums_data.items():
-        await stadiums_collection.update_one(
-            {"id": stadium_id}, 
-            {"$setOnInsert": stadium_data}, 
-            upsert=True
+        operaciones_estadios.append(
+            UpdateOne({"id": stadium_id}, {"$setOnInsert": stadium_data}, upsert=True)
         )
+    if operaciones_estadios:
+        await stadiums_collection.bulk_write(operaciones_estadios)
     
     # Inicializar partidos
+    operaciones_partidos = []
     for match_id, match_data in matches_data.items():
         match_doc = match_data.copy()
         match_doc.update({"homeScore": None, 
@@ -255,12 +259,12 @@ async def initialize_database():
                           "awayPenaltyScore": None, 
                           "isCompleted": False, 
                           "winnerId": None})
-        await matches_collection.update_one(
-            {"id": match_id}, 
-            {"$setOnInsert": match_doc}, 
-            upsert=True
+        operaciones_partidos.append(
+            UpdateOne({"id": match_id}, {"$setOnInsert": match_doc}, upsert=True)
         )
-
+    if operaciones_partidos:
+        await matches_collection.bulk_write(operaciones_partidos)
+    
 # --- Eventos de startup ---
 @app.on_event("startup")
 async def startup_event():
