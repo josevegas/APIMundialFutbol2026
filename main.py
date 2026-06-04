@@ -16,7 +16,7 @@ MONGODB_URI = os.getenv("MONGODB_URI")
 if not MONGODB_URI:
     raise ValueError("MONGODB_URI no está definida en el archivo .env")
 
-cors_env= os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")  # Permitir múltiples orígenes separados por comas
+cors_env= os.getenv("CORS_ORIGINS", "http://localhost:5173")  # Permitir múltiples orígenes separados por comas
 # Inicializar cliente y base de datos
 client = AsyncIOMotorClient(MONGODB_URI)
 db = client["mundial2026"]
