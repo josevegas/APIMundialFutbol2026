@@ -23,7 +23,16 @@ teams_collection = db["teams"]
 stadiums_collection = db["stadiums"]
 matches_collection = db["matches"]
 
-app = FastAPI(title="API de Mundial de Futbol 2026")
+# --- Eventos de startup ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("Inicializando base de datos MongoDB...")
+    await initialize_database()
+    print("Base de datos inicializada correctamente")
+    yield
+    print("Cerrando conexión con MongoDB...")
+    client.close()
+app = FastAPI(title="API de Mundial de Futbol 2026",lifespan=lifespan)
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 origins = CORS_ORIGINS if CORS_ORIGINS != ["http://localhost:5173"] else ["http://localhost:5173"]
 app.add_middleware(
@@ -265,17 +274,6 @@ async def initialize_database():
     if operaciones_partidos:
         await matches_collection.bulk_write(operaciones_partidos)
     
-# --- Eventos de startup ---
-@app.on_event("startup")
-async def startup_event():
-    print("Inicializando base de datos MongoDB...")
-    await initialize_database()
-    print("Base de datos inicializada correctamente")
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    print("Cerrando conexión con MongoDB...")
-    client.close()
 
 # --- Endpoints de partidos ---
 @app.get("/matches/", response_model=List[dict], summary="Obtener la lista de partidos")
