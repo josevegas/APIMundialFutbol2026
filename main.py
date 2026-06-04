@@ -26,7 +26,9 @@ matches_collection = db["matches"]
 
 app = FastAPI(title="API de Mundial de Futbol 2026")
 app.add_middleware(GZipMiddleware, minimum_size=1000)
-cors_env=os
+cors_env=os.getenv("CORS_ORIGINS", "http://localhost:5173")
+if cors_env is None:
+    cors_env = "http://localhost:5173"
 origins = [origins.strip().rstrip("/") for origins in cors_env.split(",") if origins.strip()]
 app.add_middleware(
     CORSMiddleware,
