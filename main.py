@@ -82,7 +82,7 @@ class MatchUpdate(BaseModel):
     awayTeamGoals: int
     homeTeamPenaltyGoals: Optional[int] = None
     awayTeamPenaltyGoals: Optional[int] = None
-    winnerId: Optional[str] = None
+    isCompleted: bool = True
 
 # --- Datos iniciales ---
 teams_data = {
@@ -288,63 +288,72 @@ async def get_stadiums():
 
 @app.patch("/matches/{match_id}", summary="Actualizar el resultado de un partido")
 async def update_match(match_id: str, match_update: MatchUpdate):
-    match = await matches_collection.update_one(
+    match = await matches_collection.find_one({"id": match_id}, {"_id": 0})
+    winner_id = None
+    if match_update.homeTeamGoals>match_update.awayTeamGoals:
+        winner_id=match["homeTeamId"]
+    elif match_update.homeTeamGoals<match_update.awayTeamGoals:
+        winner_id=match["awayTeamId"]
+    match_updated=await matches_collection.update_one(
         {"id": match_id},
         {"$set": {
             "homeScore": match_update.homeTeamGoals,
             "awayScore": match_update.awayTeamGoals,
             "homePenaltyScore": match_update.homeTeamPenaltyGoals,
             "awayPenaltyScore": match_update.awayTeamPenaltyGoals,
-            "isCompleted": True,
-            "winnerId": match_update.winnerId
+            "isCompleted": match_update.isCompleted,
+            "winnerId": winner_id
         }}
     )
         
-    if match.matched_count == 0:
+    if match_updated.matched_count == 0:
         raise HTTPException(status_code=404, detail="Partido no encontrado")
     
     partido_actualizado = await matches_collection.find_one({"id": match_id}, {"_id": 0})
-    home_team= await teams_collection.find_one({"id": partido_actualizado["homeTeamId"]}, {"_id": 0})
-    away_team= await teams_collection.find_one({"id": partido_actualizado["awayTeamId"]}, {"_id": 0})
-    if home_team and away_team:
-        if partido_actualizado["homeScore"] > partido_actualizado["awayScore"]:
-            await teams_collection.update_one(
-                {"id": home_team["id"]},
-                {"$inc": {"played":1,"won":1,"goalsFor": partido_actualizado["homeScore"], "goalsAgainst": partido_actualizado["awayScore"], "points": 3}}
-            )
-            await teams_collection.update_one(
-                {"id": away_team["id"]},
-                {"$inc": {"played":1,"lost":1,"goalsFor": partido_actualizado["awayScore"], "goalsAgainst": partido_actualizado["homeScore"]}}
-            )
-        elif partido_actualizado["homeScore"] < partido_actualizado["awayScore"]:
-            await teams_collection.update_one(
-                {"id": home_team["id"]},
-                {"$inc": {"played":1,"lost":1,"goalsFor": partido_actualizado["homeScore"], "goalsAgainst": partido_actualizado["awayScore"]}}
-            )
-            await teams_collection.update_one(
-                {"id": away_team["id"]},
-                {"$inc": {"played":1,"won":1,"goalsFor": partido_actualizado["awayScore"], "goalsAgainst": partido_actualizado["homeScore"], "points": 3}}
-            )
-        else:
-            await teams_collection.update_one(
-                {"id": home_team["id"]},
-                {"$inc": {"played":1,"drawn":1,"goalsFor": partido_actualizado["homeScore"], "goalsAgainst": partido_actualizado["awayScore"], "points": 1}}
-            )
-            await teams_collection.update_one(
-                {"id": away_team["id"]},
-                {"$inc": {"played":1,"drawn":1,"goalsFor": partido_actualizado["awayScore"], "goalsAgainst": partido_actualizado["homeScore"], "points": 1}}
-            )
-    diferencia_goles_home = home_team.get("goalsFor", 0) - home_team.get("goalsAgainst", 0)
-    diferencia_goles_away = away_team.get("goalsFor", 0) - away_team.get("goalsAgainst", 0)
-    await teams_collection.update_one(
-        {"id": home_team["id"]},
-        {"$set": {"goalDifference": diferencia_goles_home}}
-    )
-    await teams_collection.update_one(
-        {"id": away_team["id"]},    
-        {"$set": {"goalDifference": diferencia_goles_away}}
-    )
+    await recalcular_estadisticas_equipo(partido_actualizado["homeTeamId"])
+    await recalcular_estadisticas_equipo(partido_actualizado["awayTeamId"])
     return partido_actualizado
+
+async def recalcular_estadisticas_equipo(team_id: str):
+    matches_team=await matches_collection.find({"$or": [{"homeTeamId": team_id}, {"awayTeamId": team_id}],"isCompleted":True}, {"_id": 0}).to_list(length=100)
+    played = len(matches_team)
+    won = 0
+    drawn = 0
+    lost = 0
+    goalsFor = 0
+    goalsAgainst = 0
+    points = 0
+    for match in matches_team:
+        if match["homeTeamId"] == team_id:
+            gf= match["homeScore"]
+            ga= match["awayScore"]
+        else:
+            gf= match["awayScore"]
+            ga= match["homeScore"]
+        goalsFor += gf
+        goalsAgainst += ga
+        if gf > ga:
+            won += 1
+            points += 3
+        elif gf == ga:
+            drawn += 1
+            points += 1
+        else:
+            lost += 1
+    goalDifference = goalsFor - goalsAgainst
+    await teams_collection.update_one(
+        {"id": team_id},
+        {"$set": {
+            "played": played,
+            "won": won,
+            "drawn": drawn,
+            "lost": lost,
+            "goalsFor": goalsFor,
+            "goalsAgainst": goalsAgainst,
+            "goalDifference": goalDifference,
+            "points": points
+        }}
+    )
 
 # --- Endpoint para obtener partidos por grupo ---
 @app.get("/matches/group/{group_id}", response_model=List[dict], summary="Obtener partidos por grupo")
@@ -360,10 +369,10 @@ async def get_teams():
     return teams
 
 # --- Endpoint de Partido por Id ---
-@app.get("/teams/{team_id}", summary="Obtener partido por Id")
-async def get_matches_by_id(id: str):
+@app.get("/matches/{match_id}", summary="Obtener partido por Id")
+async def get_matches_by_id(match_id: str):
     # Ordenar tabla
-    match_upper = id.upper()
+    match_upper = match_id.upper()
     match = await matches_collection.find_one({"id": match_upper}, {"_id": 0})
     return match
 
